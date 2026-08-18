@@ -19,7 +19,7 @@ static id g_uidLock = nil;
 
 + (void)captureUidFromURL:(NSString *)url {
     if ([url containsString:@"remind/unread_count"] || [url containsString:@"users/show"]) {
-        NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"uid=(\d+)" options:0 error:nil];
+        NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"uid=([0-9]+)" options:0 error:nil];
         NSTextCheckingResult *m = [re firstMatchInString:url options:0 range:NSMakeRange(0, url.length)];
         if (m) {
             NSString *uid = [url substringWithRange:[m rangeAtIndex:1]];
@@ -40,7 +40,7 @@ static id g_uidLock = nil;
                                    options:NSLiteralSearch
                                      range:NSMakeRange(0, newUrl.length)];
         NSString *uid = nil;
-        NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"uid=(\d+)" options:0 error:nil];
+        NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"uid=([0-9]+)" options:0 error:nil];
         NSTextCheckingResult *m = [re firstMatchInString:origURLStr options:0 range:NSMakeRange(0, origURLStr.length)];
         if (m) uid = [origURLStr substringWithRange:[m rangeAtIndex:1]];
         if (!uid) @synchronized (g_uidLock) { uid = g_uid; }
