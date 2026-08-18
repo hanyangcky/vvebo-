@@ -1,4 +1,3 @@
-.RECIPEPREFIX = >
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
   SDK := $(shell xcrun --sdk iphoneos --show-sdk-path 2>/dev/null)
@@ -12,10 +11,10 @@ ARCH := arm64
 MIN  := 11.0
 
 vvebo_fix.dylib: vvebo_fix.m
->@echo ">> SDK = $(SDK)"
->$(CC) -dynamiclib -arch $(ARCH) -miphoneos-version-min=$(MIN) -isysroot $(SDK) -framework Foundation $< -o $@
+	@echo ">> SDK = $(SDK)"
+	$(CC) -dynamiclib -arch $(ARCH) -miphoneos-version-min=$(MIN) -isysroot $(SDK) -framework Foundation $< -o $@
 
 clean:
->rm -f vvebo_fix.dylib
+	rm -f vvebo_fix.dylib
 
 .PHONY: clean
