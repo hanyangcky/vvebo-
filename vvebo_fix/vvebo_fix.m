@@ -1,5 +1,5 @@
 //
-//  vvebo_fix.m  v4
+//  vvebo_fix.m  v5  (无日志版：VVFileLog 已置空，不再向 Documents/vvfix.log 写盘)
 //  VVebo 重写规则 -> 进程内 dylib（仅接口适配，不含付费绕过）
 //
 //  v4 修订点（关键架构变更）：
@@ -22,45 +22,9 @@
 static NSString *g_uid = nil;
 static id g_uidLock = nil;
 
-#pragma mark - File logging
+#pragma mark - Logging (disabled: kept as no-op so call sites stay valid but nothing is written to disk)
 
-static NSString *VVLogPath(void) {
-    static NSString *p = nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,
-                                                              NSUserDomainMask, YES) firstObject];
-        p = [docs stringByAppendingPathComponent:@"vvfix.log"];
-    });
-    return p;
-}
-
-static void VVFileLog(NSString *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:ap];
-    va_end(ap);
-
-    NSString *line = [NSString stringWithFormat:@"[%@] [VVFIX] %@\n",
-                      [[NSDate date] description], msg];
-    NSLog(@"[VVFIX] %@", msg);
-
-    @try {
-        NSString *path = VVLogPath();
-        NSFileManager *fm = [NSFileManager defaultManager];
-        if (![fm fileExistsAtPath:path]) {
-            [fm createFileAtPath:path contents:nil attributes:nil];
-        }
-        NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:path];
-        if (fh) {
-            [fh seekToEndOfFile];
-            [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
-            [fh closeFile];
-        }
-    } @catch (NSException *e) {
-        NSLog(@"[VVFIX] log write failed: %@", e);
-    }
-}
+static void VVFileLog(NSString *fmt, ...) { (void)fmt; }
 
 #pragma mark - VVTransform
 
