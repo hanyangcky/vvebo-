@@ -143,38 +143,29 @@ static NSURLSession *ForwardSession(void) {
     BOOL needTransform = [VVTransform needsResponseTransform:finalURLStr];
 
     __weak typeof(self) weakSelf = self;
-    NSURLSessionDataTask *task = [[ForwardSession() dataTaskWithRequest:finalReq
-                                                  completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+    void (^handler)(NSData *, NSURLResponse *, NSError *) = ^(NSData *data, NSURLResponse *response, NSError *error) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
-
         if (error) {
             [strongSelf.client URLProtocol:strongSelf didFailWithError:error];
             return;
         }
-
         NSData *outData = data;
         if (needTransform && data) {
             outData = [VVTransform transformResponse:data forURL:finalURLStr];
         }
-
         NSURLResponse *outResp = response;
         if ([response isKindOfClass:[NSHTTPURLResponse class]] && outData) {
             NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
             NSMutableDictionary *headers = [http.allHeaderFields mutableCopy];
             headers[@"Content-Length"] = [NSString stringWithFormat:@"%lu", (unsigned long)outData.length];
-            outResp = [[NSHTTPURLResponse alloc] initWithURL:http.URL
-                                                   statusCode:http.statusCode
-                                                  HTTPVersion:@"HTTP/1.1"
-                                                 headerFields:headers];
+            outResp = [[NSHTTPURLResponse alloc] initWithURL:http.URL statusCode:http.statusCode HTTPVersion:@"HTTP/1.1" headerFields:headers];
         }
-
-        [strongSelf.client URLProtocol:strongSelf
-                    didReceiveResponse:outResp
-                    cacheStoragePolicy:NSURLCacheStorageNotAllowed];
+        [strongSelf.client URLProtocol:strongSelf didReceiveResponse:outResp cacheStoragePolicy:NSURLCacheStorageNotAllowed];
         if (outData) [strongSelf.client URLProtocol:strongSelf didLoadData:outData];
         [strongSelf.client URLProtocolDidFinishLoading:strongSelf];
-    }];
+    };
+    NSURLSessionDataTask *task = [ForwardSession() dataTaskWithRequest:finalReq completionHandler:handler];
     self.task = task;
     [task resume];
 }
