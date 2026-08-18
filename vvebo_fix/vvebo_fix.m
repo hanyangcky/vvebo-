@@ -1,14 +1,18 @@
 //
-//  vvebo_fix.m
+//  vvebo_fix.m  v3
 //  VVebo 重写规则 -> 进程内 dylib（仅接口适配，不含付费绕过）
 //
-//  v2 修订点：
-//   1. 文件日志：每次事件写入 App 沙盒 Documents/vvfix.log（无需 Mac 即可用 3uTools 导出查看）。
-//   2. host 匹配放宽到“任意含 weibo 的域名”，并记录实际 host/path，便于定位 vVebo 真实接口。
-//   3. 转发请求使用 defaultSessionConfiguration + 共享 Cookie 存储，保留登录态。
-//   4. swizzle -[NSURLSessionConfiguration protocolClasses]，保证 App 即便显式设了
-//      protocolClasses，我们的协议也会被纳入。
-//   5. 忠实移植 fix-vvebo-user-timeline.js / fix-vvebo-fans.js 的逻辑。
+//  v3 修订点：
+//   1. 关键修复：hook NSURLSession 的 sessionWithConfiguration: 工厂方法，
+//      在创建 session 前强制把 VVProtocol 写入 configuration.protocolClasses，
+//      解决 “NSURLSession 内部不读取 getter swizzle 的 protocolClasses”
+//      导致 canInit 永远不被调用的问题。
+//   2. 新增“探针”：hook NSURLSession dataTaskWithRequest: 等，记录 App 发出的
+//      每一个请求 URL，用于在无 Mac 情况下确认 vVebo 真实流量与所用网络栈。
+//   3. canInit 对每一个 weibo 域请求无条件记录，确认协议是否被咨询。
+//   4. 仅拦截规则涉及的接口（user_timeline / profile tab / cardlist /
+//      unread_count / users/show），其余请求原样放行，降低风险。
+//   5. 文件日志落到 App 沙盒 Documents/vvfix.log（Filza 可导出）。
 //
 
 #import <Foundation/Foundation.h>
@@ -60,6 +64,7 @@ static void VVFileLog(NSString *fmt, ...) {
 #pragma mark - VVTransform
 
 @interface VVTransform : NSObject
++ (BOOL)vv_shouldIntercept:(NSString *)url;
 + (void)captureUidFromURL:(NSString *)url;
 + (NSURLRequest *)rewriteRequest:(NSMutableURLRequest *)req originalURL:(NSString *)origURLStr;
 + (BOOL)needsResponseTransform:(NSString *)url;
@@ -67,6 +72,15 @@ static void VVFileLog(NSString *fmt, ...) {
 @end
 
 @implementation VVTransform
+
++ (BOOL)vv_shouldIntercept:(NSString *)url {
+    if ([url containsString:@"statuses/user_timeline"]) return YES;
+    if ([url containsString:@"profile/statuses/tab"]) return YES;
+    if ([url containsString:@"cardlist"]) return YES;
+    if ([url containsString:@"remind/unread_count"]) return YES;
+    if ([url containsString:@"users/show"]) return YES;
+    return NO;
+}
 
 + (void)captureUidFromURL:(NSString *)url {
     if ([url containsString:@"remind/unread_count"] || [url containsString:@"users/show"]) {
@@ -196,13 +210,12 @@ static NSURLSession *ForwardSession(void) {
 @implementation VVProtocol
 
 + (BOOL)canInitWithRequest:(NSURLRequest *)request {
-    if ([request valueForHTTPHeaderField:@"X-VV-Internal"]) return NO;
+    if ([request valueForHTTPHeaderField:@"X-VV-Internal"] != nil) return NO;
     NSString *host = request.URL.host ?: @"";
-    // 放宽：拦截任意含 weibo 的域名，并记录实际 host/path 便于排查
-    if ([host containsString:@"weibo"]) {
-        VVFileLog(@"canInit host=%@ path=%@", host, request.URL.path);
-        return YES;
-    }
+    NSString *abs = request.URL.absoluteString ?: @"";
+    if (![host containsString:@"weibo"]) return NO;
+    VVFileLog(@"canInit: host=%@ path=%@", host, request.URL.path);
+    if ([VVTransform vv_shouldIntercept:abs]) return YES;
     return NO;
 }
 
@@ -262,14 +275,24 @@ static NSURLSession *ForwardSession(void) {
 
 @end
 
-#pragma mark - NSURLSessionConfiguration hook
+#pragma mark - Force protocol into every NSURLSessionConfiguration
+
+static void VVForceAddProtocol(NSURLSessionConfiguration *cfg) {
+    if (!cfg) return;
+    NSMutableArray *pc = [[cfg protocolClasses] mutableCopy];
+    if (!pc) pc = [NSMutableArray array];
+    Class vp = [VVProtocol class];
+    if (![pc containsObject:vp]) {
+        [pc addObject:vp];
+        [cfg setProtocolClasses:pc];
+    }
+}
 
 @interface NSURLSessionConfiguration (VVAdditions)
 - (NSArray *)vv_protocolClasses;
 @end
 
 @implementation NSURLSessionConfiguration (VVAdditions)
-
 - (NSArray *)vv_protocolClasses {
     NSMutableArray *arr = [[self vv_protocolClasses] mutableCopy];
     if (!arr) arr = [NSMutableArray array];
@@ -277,12 +300,65 @@ static NSURLSession *ForwardSession(void) {
     if (![arr containsObject:vp]) [arr addObject:vp];
     return arr;
 }
+@end
+
+#pragma mark - NSURLSession factory + task probe
+
+@interface NSURLSession (VVHook)
++ (NSURLSession *)vv_sessionWithConfiguration:(NSURLSessionConfiguration *)configuration;
++ (NSURLSession *)vv_sessionWithConfiguration:(NSURLSessionConfiguration *)configuration
+                                     delegate:(id)delegate
+                                delegateQueue:(NSOperationQueue *)queue;
+- (NSURLSessionDataTask *)vv_dataTaskWithRequest:(NSURLRequest *)request
+                               completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler;
+- (NSURLSessionDataTask *)vv_dataTaskWithRequest:(NSURLRequest *)request;
+@end
+
+@implementation NSURLSession (VVHook)
+
++ (NSURLSession *)vv_sessionWithConfiguration:(NSURLSessionConfiguration *)configuration {
+    VVForceAddProtocol(configuration);
+    VVFileLog(@"factory: protocolClasses=%@", [configuration protocolClasses]);
+    return [self vv_sessionWithConfiguration:configuration];
+}
+
++ (NSURLSession *)vv_sessionWithConfiguration:(NSURLSessionConfiguration *)configuration
+                                     delegate:(id)delegate
+                                delegateQueue:(NSOperationQueue *)queue {
+    VVForceAddProtocol(configuration);
+    VVFileLog(@"factory(delegate): protocolClasses=%@", [configuration protocolClasses]);
+    return [self vv_sessionWithConfiguration:configuration delegate:delegate delegateQueue:queue];
+}
+
+- (NSURLSessionDataTask *)vv_dataTaskWithRequest:(NSURLRequest *)request
+                               completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler {
+    if ([request valueForHTTPHeaderField:@"X-VV-Internal"] == nil) {
+        NSURL *u = request.URL;
+        if (u) VVFileLog(@"PROBE task: %@://%@%@", u.scheme, u.host, u.path);
+    }
+    return [self vv_dataTaskWithRequest:request completionHandler:completionHandler];
+}
+
+- (NSURLSessionDataTask *)vv_dataTaskWithRequest:(NSURLRequest *)request {
+    if ([request valueForHTTPHeaderField:@"X-VV-Internal"] == nil) {
+        NSURL *u = request.URL;
+        if (u) VVFileLog(@"PROBE task: %@://%@%@", u.scheme, u.host, u.path);
+    }
+    return [self vv_dataTaskWithRequest:request];
+}
 
 @end
+
+#pragma mark - Swizzle helper
 
 static void Swizzle(Class c, SEL orig, SEL repl) {
     Method m1 = class_getInstanceMethod(c, orig);
     Method m2 = class_getInstanceMethod(c, repl);
+    if (m1 && m2) method_exchangeImplementations(m1, m2);
+}
+static void SwizzleClass(Class c, SEL orig, SEL repl) {
+    Method m1 = class_getClassMethod(c, orig);
+    Method m2 = class_getClassMethod(c, repl);
     if (m1 && m2) method_exchangeImplementations(m1, m2);
 }
 
@@ -290,9 +366,30 @@ static void Swizzle(Class c, SEL orig, SEL repl) {
 
 __attribute__((constructor)) static void VVInit(void) {
     g_uidLock = [[NSObject alloc] init];
+    VVFileLog(@"==== VVFIX init start (bundle=%@) ====",
+              [[NSBundle mainBundle] bundleIdentifier]);
+
     [NSURLProtocol registerClass:[VVProtocol class]];
+
+    // getter swizzle (belt)
     Swizzle([NSURLSessionConfiguration class],
-            @selector(protocolClasses),
-            @selector(vv_protocolClasses));
-    VVFileLog(@"==== VVFIX init done (protocol registered + protocolClasses swizzled) ====");
+            @selector(protocolClasses), @selector(vv_protocolClasses));
+
+    // factory hook (suspenders) — force protocol into every session
+    SwizzleClass([NSURLSession class],
+                 @selector(sessionWithConfiguration:),
+                 @selector(vv_sessionWithConfiguration:));
+    SwizzleClass([NSURLSession class],
+                 @selector(sessionWithConfiguration:delegate:delegateQueue:),
+                 @selector(vv_sessionWithConfiguration:delegate:delegateQueue:));
+
+    // probe: log every request the app makes
+    Swizzle([NSURLSession class],
+            @selector(dataTaskWithRequest:completionHandler:),
+            @selector(vv_dataTaskWithRequest:completionHandler:));
+    Swizzle([NSURLSession class],
+            @selector(dataTaskWithRequest:),
+            @selector(vv_dataTaskWithRequest:));
+
+    VVFileLog(@"==== VVFIX init done ====");
 }
