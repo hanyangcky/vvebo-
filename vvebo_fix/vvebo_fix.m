@@ -2,12 +2,13 @@
 //  vvebo_fix.m
 //  VVebo 重写规则 -> 进程内 dylib（仅接口适配，不含付费绕过）
 //
-//  修订点（相对初版）：
-//   1. 转发请求改用 defaultSessionConfiguration + 共享 Cookie 存储，
-//      避免 ephemeral 把微博登录态 Cookie 丢掉导致请求未授权。
-//   2. swizzle -[NSURLSessionConfiguration protocolClasses]，
-//      保证 App 即便显式设了 protocolClasses，我们的协议也会被纳入。
-//   3. 全程 [VVFIX] 前缀日志，便于在 Console.app 排查是否加载/拦截。
+//  v2 修订点：
+//   1. 文件日志：每次事件写入 App 沙盒 Documents/vvfix.log（无需 Mac 即可用 3uTools 导出查看）。
+//   2. host 匹配放宽到“任意含 weibo 的域名”，并记录实际 host/path，便于定位 vVebo 真实接口。
+//   3. 转发请求使用 defaultSessionConfiguration + 共享 Cookie 存储，保留登录态。
+//   4. swizzle -[NSURLSessionConfiguration protocolClasses]，保证 App 即便显式设了
+//      protocolClasses，我们的协议也会被纳入。
+//   5. 忠实移植 fix-vvebo-user-timeline.js / fix-vvebo-fans.js 的逻辑。
 //
 
 #import <Foundation/Foundation.h>
@@ -16,7 +17,45 @@
 static NSString *g_uid = nil;
 static id g_uidLock = nil;
 
-#define VVLog(...) NSLog(@"[VVFIX] " __VA_ARGS__)
+#pragma mark - File logging
+
+static NSString *VVLogPath(void) {
+    static NSString *p = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,
+                                                              NSUserDomainMask, YES) firstObject];
+        p = [docs stringByAppendingPathComponent:@"vvfix.log"];
+    });
+    return p;
+}
+
+static void VVFileLog(NSString *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:ap];
+    va_end(ap);
+
+    NSString *line = [NSString stringWithFormat:@"[%@] [VVFIX] %@\n",
+                      [[NSDate date] description], msg];
+    NSLog(@"[VVFIX] %@", msg);
+
+    @try {
+        NSString *path = VVLogPath();
+        NSFileManager *fm = [NSFileManager defaultManager];
+        if (![fm fileExistsAtPath:path]) {
+            [fm createFileAtPath:path contents:nil attributes:nil];
+        }
+        NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:path];
+        if (fh) {
+            [fh seekToEndOfFile];
+            [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+            [fh closeFile];
+        }
+    } @catch (NSException *e) {
+        NSLog(@"[VVFIX] log write failed: %@", e);
+    }
+}
 
 #pragma mark - VVTransform
 
@@ -31,19 +70,19 @@ static id g_uidLock = nil;
 
 + (void)captureUidFromURL:(NSString *)url {
     if ([url containsString:@"remind/unread_count"] || [url containsString:@"users/show"]) {
-        NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"uid=([0-9]+)" options:0 error:nil];
+        NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"uid=([0-9]+)"
+                                                                            options:0 error:nil];
         NSTextCheckingResult *m = [re firstMatchInString:url options:0 range:NSMakeRange(0, url.length)];
         if (m) {
             NSString *uid = [url substringWithRange:[m rangeAtIndex:1]];
             @synchronized (g_uidLock) { g_uid = uid; }
-            VVLog(@"captured uid=%@", uid);
+            VVFileLog(@"captured uid=%@", uid);
         }
     }
 }
 
 + (NSURLRequest *)rewriteRequest:(NSMutableURLRequest *)req originalURL:(NSString *)origURLStr {
     if ([origURLStr containsString:@"statuses/user_timeline"]) {
-        VVLog(@"rewrite user_timeline -> profile/statuses/tab");
         NSMutableString *newUrl = [origURLStr mutableCopy];
         [newUrl replaceOccurrencesOfString:@"statuses/user_timeline"
                                 withString:@"profile/statuses/tab"
@@ -54,16 +93,20 @@ static id g_uidLock = nil;
                                    options:NSLiteralSearch
                                      range:NSMakeRange(0, newUrl.length)];
         NSString *uid = nil;
-        NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"uid=([0-9]+)" options:0 error:nil];
-        NSTextCheckingResult *m = [re firstMatchInString:origURLStr options:0 range:NSMakeRange(0, origURLStr.length)];
+        NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"uid=([0-9]+)"
+                                                                            options:0 error:nil];
+        NSTextCheckingResult *m = [re firstMatchInString:origURLStr
+                                                 options:0
+                                                   range:NSMakeRange(0, origURLStr.length)];
         if (m) uid = [origURLStr substringWithRange:[m rangeAtIndex:1]];
         if (!uid) @synchronized (g_uidLock) { uid = g_uid; }
         if (uid) {
             [newUrl appendFormat:@"&containerid=230413%@_-_WEIBO_SECOND_PROFILE_WEIBO", uid];
-            VVLog(@"using uid=%@ for containerid", uid);
+            VVFileLog(@"rewrite user_timeline -> tab (uid=%@)", uid);
         } else {
-            VVLog(@"WARN: no uid available for containerid");
+            VVFileLog(@"WARN: no uid available when rewriting user_timeline");
         }
+        VVFileLog(@"final url: %@", newUrl);
         req.URL = [NSURL URLWithString:newUrl];
     }
     return req;
@@ -79,7 +122,7 @@ static id g_uidLock = nil;
     NSError *err = nil;
     id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:&err];
     if (err || !json) {
-        VVLog(@"transform: json parse failed, pass through");
+        VVFileLog(@"transform: json parse failed, pass through");
         return data;
     }
 
@@ -92,7 +135,7 @@ static id g_uidLock = nil;
                 if ([c[@"card_type"] integerValue] == 9) {
                     NSMutableDictionary *mblog = [c[@"mblog"] mutableCopy];
                     if ([mblog[@"isTop"] boolValue]) {
-                        mblog[@"label"] = @"\u7f6e\u9876";
+                        mblog[@"label"] = @"置顶";
                     }
                     [statuses addObject:mblog];
                 }
@@ -105,7 +148,7 @@ static id g_uidLock = nil;
             @"total_number": @(100)
         };
         NSData *outData = [NSJSONSerialization dataWithJSONObject:outObj options:0 error:nil];
-        VVLog(@"transform tab: %lu statuses", (unsigned long)statuses.count);
+        VVFileLog(@"transform tab: %lu statuses (since_id=%@)", (unsigned long)statuses.count, sinceId);
         return outData ?: data;
     }
 
@@ -118,7 +161,7 @@ static id g_uidLock = nil;
                     return ![@"INTEREST_PEOPLE2" isEqualToString:card[@"itemid"]];
                 }]];
             outObj[@"cards"] = filtered;
-            VVLog(@"transform fans: %lu -> %lu cards", (unsigned long)cards.count, (unsigned long)filtered.count);
+            VVFileLog(@"transform fans: %lu -> %lu cards", (unsigned long)cards.count, (unsigned long)filtered.count);
         }
         NSData *outData = [NSJSONSerialization dataWithJSONObject:outObj options:0 error:nil];
         return outData ?: data;
@@ -155,10 +198,10 @@ static NSURLSession *ForwardSession(void) {
 + (BOOL)canInitWithRequest:(NSURLRequest *)request {
     if ([request valueForHTTPHeaderField:@"X-VV-Internal"]) return NO;
     NSString *host = request.URL.host ?: @"";
+    // 放宽：拦截任意含 weibo 的域名，并记录实际 host/path 便于排查
     if ([host containsString:@"weibo"]) {
-        BOOL intercept = [host containsString:@"api.weibo.cn"];
-        VVLog(@"canInit host=%@ intercept=%d", host, intercept);
-        return intercept;
+        VVFileLog(@"canInit host=%@ path=%@", host, request.URL.path);
+        return YES;
     }
     return NO;
 }
@@ -183,7 +226,7 @@ static NSURLSession *ForwardSession(void) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
         if (error) {
-            VVLog(@"forward error: %@", error.localizedDescription);
+            VVFileLog(@"forward error: %@", error.localizedDescription);
             [strongSelf.client URLProtocol:strongSelf didFailWithError:error];
             return;
         }
@@ -251,5 +294,5 @@ __attribute__((constructor)) static void VVInit(void) {
     Swizzle([NSURLSessionConfiguration class],
             @selector(protocolClasses),
             @selector(vv_protocolClasses));
-    VVLog(@"init done (protocol registered + swizzled)");
+    VVFileLog(@"==== VVFIX init done (protocol registered + protocolClasses swizzled) ====");
 }
