@@ -74,7 +74,9 @@ static void VVFileLog(NSString *fmt, ...) {
 @implementation VVTransform
 
 + (void)captureUid:(NSString *)url {
-    if ([url containsString:@"remind/unread_count"] || [url containsString:@"users/show"]) {
+    // 仅从 unread_count 抓取登录用户 uid（与原始脚本一致）。
+    // 注意：users/show 触发时 uid 是被查看者的 uid，绝不能用来覆盖登录用户 uid。
+    if ([url containsString:@"remind/unread_count"]) {
         NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"uid=([0-9]+)"
                                                                             options:0 error:nil];
         NSTextCheckingResult *m = [re firstMatchInString:url options:0 range:NSMakeRange(0, url.length)];
