@@ -1,37 +1,13 @@
 >> SDK = /Applications/Xcode_26.6.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.5.sdk
-clang -dynamiclib -arch arm64 -miphoneos-version-min=11.0 -isysroot /Applications/Xcode_26.6.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.5.sdk -framework Foundation vvebo_fix.m -o vvebo_fix.dylib
-vvebo_fix.m:165:5: error: cannot create __weak reference in file using manual reference counting
-  165 |     __weak typeof(self) weakSelf = self;
-      |     ^
-vvebo_fix.m:166:15: error: assigning to 'NSURLSessionDataTask *' from incompatible type 'void'
-  166 |     self.task = [[ForwardSession() dataTaskWithRequest:finalReq
-      |               ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  167 |                                   completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-      |                                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  168 |         __strong typeof(weakSelf) strongSelf = weakSelf;
-      |         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  169 |         if (!strongSelf) return;
-      |         ~~~~~~~~~~~~~~~~~~~~~~~~
-  170 | 
-  171 |         if (error) {
-      |         ~~~~~~~~~~~~
-  172 |             [strongSelf.client URLProtocol:strongSelf didFailWithError:error];
-      |             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  173 |             return;
-      |             ~~~~~~~
-  174 |         }
-      |         ~
-  175 | 
-  176 |         NSData *outData = data;
-      |         ~~~~~~~~~~~~~~~~~~~~~~~
-  177 |         if (needTransform && data) {
-      |         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  178 |             outData = [VVTransform transformResponse:data forURL:finalURLStr];
-      |             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  179 |         }
-      |         ~
-  180 | 
-  181 |         // 重写响应头里的 Content-Length，否则部分解析会截断
-      |         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-2 errors generated.
+clang -dynamiclib -arch arm64 -fobjc-arc -miphoneos-version-min=11.0 -isysroot /Applications/Xcode_26.6.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.5.sdk -framework Foundation vvebo_fix.m -o vvebo_fix.dylib
+vvebo_fix.m:22:92: warning: unknown escape sequence '\d' [-Wunknown-escape-sequence]
+   22 |         NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"uid=(\d+)" options:0 error:nil];
+      |                                                                                            ^~
+vvebo_fix.m:43:92: warning: unknown escape sequence '\d' [-Wunknown-escape-sequence]
+   43 |         NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"uid=(\d+)" options:0 error:nil];
+      |                                                                                            ^~
+vvebo_fix.m:177:7: error: expected identifier
+  177 |     }];
+      |       ^
+2 warnings and 1 error generated.
 make: *** [vvebo_fix.dylib] Error 1
