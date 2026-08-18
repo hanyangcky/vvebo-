@@ -1,20 +1,10 @@
 //
 //  vvebo_fix.m
-//  ---------------------------------------------------------------------------
-//  把 Shadowrocket / Stash 的「VVebo 重写规则」搬进 App 进程内执行，
-//  通过 NSURLProtocol 拦截 api.weibo.cn 的流量，做请求改写 + 响应改写，
-//  从而实现：不依赖 VPN / MITM 代理也能打开博主主页、时间线、粉丝列表。
-//
-//  本文件仅实现接口适配，不涉及任何付费 / 订阅 / Pro 相关的绕过。
-//  编译环境：macOS + Xcode (clang, iphoneos SDK)，目标架构 arm64。
-//  ---------------------------------------------------------------------------
+//  VVebo 重写规则 -> 进程内 dylib（仅接口适配，不含付费绕过）
 //
 
 #import <Foundation/Foundation.h>
 
-// ---------------------------------------------------------------------------
-//  转换逻辑：忠实复刻 suiyuran/stash 的两个脚本
-// ---------------------------------------------------------------------------
 static NSString *g_uid = nil;
 static id g_uidLock = nil;
 
@@ -29,7 +19,7 @@ static id g_uidLock = nil;
 
 + (void)captureUidFromURL:(NSString *)url {
     if ([url containsString:@"remind/unread_count"] || [url containsString:@"users/show"]) {
-        NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"uid=(\\d+)" options:0 error:nil];
+        NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"uid=(\d+)" options:0 error:nil];
         NSTextCheckingResult *m = [re firstMatchInString:url options:0 range:NSMakeRange(0, url.length)];
         if (m) {
             NSString *uid = [url substringWithRange:[m rangeAtIndex:1]];
@@ -49,14 +39,12 @@ static id g_uidLock = nil;
                                 withString:@"since_id"
                                    options:NSLiteralSearch
                                      range:NSMakeRange(0, newUrl.length)];
-
         NSString *uid = nil;
-        NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"uid=(\\d+)" options:0 error:nil];
+        NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"uid=(\d+)" options:0 error:nil];
         NSTextCheckingResult *m = [re firstMatchInString:origURLStr options:0 range:NSMakeRange(0, origURLStr.length)];
         if (m) uid = [origURLStr substringWithRange:[m rangeAtIndex:1]];
         if (!uid) @synchronized (g_uidLock) { uid = g_uid; }
         if (uid) [newUrl appendFormat:@"&containerid=230413%@_-_WEIBO_SECOND_PROFILE_WEIBO", uid];
-
         req.URL = [NSURL URLWithString:newUrl];
     }
     return req;
@@ -73,7 +61,6 @@ static id g_uidLock = nil;
     id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:&err];
     if (err || !json) return data;
 
-    // profile/statuses/tab -> 压平成 vVebo 认识的 statuses 数组
     if ([url containsString:@"profile/statuses/tab"]) {
         NSArray *cards = json[@"cards"];
         NSMutableArray *statuses = [NSMutableArray array];
@@ -83,7 +70,7 @@ static id g_uidLock = nil;
                 if ([c[@"card_type"] integerValue] == 9) {
                     NSMutableDictionary *mblog = [c[@"mblog"] mutableCopy];
                     if ([mblog[@"isTop"] boolValue]) {
-                        mblog[@"label"] = @"置顶";
+                        mblog[@"label"] = @"\u7f6e\u9876";
                     }
                     [statuses addObject:mblog];
                 }
@@ -99,7 +86,6 @@ static id g_uidLock = nil;
         return outData ?: data;
     }
 
-    // cardlist?...selffans -> 过滤掉 INTEREST_PEOPLE2 推荐卡
     if ([url containsString:@"cardlist"] && [url containsString:@"selffans"]) {
         NSMutableDictionary *outObj = [json mutableCopy];
         NSArray *cards = json[@"cards"];
@@ -119,9 +105,6 @@ static id g_uidLock = nil;
 
 @end
 
-// ---------------------------------------------------------------------------
-//  内部转发 session（带 X-VV-Internal 标记，避免被本协议递归拦截）
-// ---------------------------------------------------------------------------
 static NSURLSession *ForwardSession(void) {
     static NSURLSession *session = nil;
     static dispatch_once_t once;
@@ -132,9 +115,6 @@ static NSURLSession *ForwardSession(void) {
     return session;
 }
 
-// ---------------------------------------------------------------------------
-//  NSURLProtocol 子类：拦截 api.weibo.cn 流量并改写
-// ---------------------------------------------------------------------------
 @interface VVProtocol : NSURLProtocol
 @property (nonatomic, strong) NSURLSessionDataTask *task;
 @end
@@ -163,8 +143,8 @@ static NSURLSession *ForwardSession(void) {
     BOOL needTransform = [VVTransform needsResponseTransform:finalURLStr];
 
     __weak typeof(self) weakSelf = self;
-    self.task = [[ForwardSession() dataTaskWithRequest:finalReq
-                                  completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+    NSURLSessionDataTask *task = [[ForwardSession() dataTaskWithRequest:finalReq
+                                                  completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
 
@@ -178,7 +158,6 @@ static NSURLSession *ForwardSession(void) {
             outData = [VVTransform transformResponse:data forURL:finalURLStr];
         }
 
-        // 重写响应头里的 Content-Length，否则部分解析会截断
         NSURLResponse *outResp = response;
         if ([response isKindOfClass:[NSHTTPURLResponse class]] && outData) {
             NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
@@ -195,7 +174,9 @@ static NSURLSession *ForwardSession(void) {
                     cacheStoragePolicy:NSURLCacheStorageNotAllowed];
         if (outData) [strongSelf.client URLProtocol:strongSelf didLoadData:outData];
         [strongSelf.client URLProtocolDidFinishLoading:strongSelf];
-    }] resume];
+    }];
+    self.task = task;
+    [task resume];
 }
 
 - (void)stopLoading {
@@ -205,9 +186,6 @@ static NSURLSession *ForwardSession(void) {
 
 @end
 
-// ---------------------------------------------------------------------------
-//  构造函数：加载时注册协议（早于 App 任何网络请求）
-// ---------------------------------------------------------------------------
 __attribute__((constructor)) static void VVInit(void) {
     g_uidLock = [[NSObject alloc] init];
     [NSURLProtocol registerClass:[VVProtocol class]];
