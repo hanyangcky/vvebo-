@@ -1,13 +1,7 @@
 >> SDK = /Applications/Xcode_26.6.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.5.sdk
 clang -dynamiclib -arch arm64 -fobjc-arc -miphoneos-version-min=11.0 -isysroot /Applications/Xcode_26.6.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.5.sdk -framework Foundation vvebo_fix.m -o vvebo_fix.dylib
-vvebo_fix.m:22:92: warning: unknown escape sequence '\d' [-Wunknown-escape-sequence]
-   22 |         NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"uid=(\d+)" options:0 error:nil];
-      |                                                                                            ^~
-vvebo_fix.m:43:92: warning: unknown escape sequence '\d' [-Wunknown-escape-sequence]
-   43 |         NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"uid=(\d+)" options:0 error:nil];
-      |                                                                                            ^~
 vvebo_fix.m:177:7: error: expected identifier
   177 |     }];
       |       ^
-2 warnings and 1 error generated.
+1 error generated.
 make: *** [vvebo_fix.dylib] Error 1
