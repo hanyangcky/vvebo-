@@ -1,5 +1,8 @@
 name: Build vvebo_fix dylib
 
+permissions:
+  contents: write
+
 on:
   push:
     branches: [main]
@@ -14,9 +17,20 @@ jobs:
         run: sudo xcode-select -switch /Applications/Xcode.app/Contents/Developer
       - name: Build dylib
         run: |
+          set -o pipefail
           cd vvebo_fix
-          make
+          make 2>&1 | tee /tmp/build.log
+      - name: Surface error log
+        if: failure()
+        run: |
+          cp /tmp/build.log build_last.log
+          git config user.email "bot@github.com"
+          git config user.name "build-bot"
+          git add build_last.log
+          git commit -m "build log (failure)" || true
+          git push || true
       - name: Upload artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: vvebo_fix.dylib
