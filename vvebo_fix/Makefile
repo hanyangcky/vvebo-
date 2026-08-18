@@ -12,7 +12,7 @@ MIN  := 11.0
 
 vvebo_fix.dylib: vvebo_fix.m
 	@echo ">> SDK = $(SDK)"
-	$(CC) -dynamiclib -arch $(ARCH) -miphoneos-version-min=$(MIN) -isysroot $(SDK) -framework Foundation $< -o $@
+	$(CC) -dynamiclib -arch $(ARCH) -fobjc-arc -miphoneos-version-min=$(MIN) -isysroot $(SDK) -framework Foundation $< -o $@
 
 clean:
 	rm -f vvebo_fix.dylib
